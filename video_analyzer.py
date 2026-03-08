@@ -69,65 +69,35 @@ def extract_video_id(url: str, platform: str) -> str:
     return url  # fallback
 
 
-def parse_cookies_from_env() -> dict:
-    """Парсит cookies из переменной окружения в dict."""
-    cookies_content = os.getenv("INSTAGRAM_COOKIES", "")
-    if not cookies_content:
-        return {}
-
-    cookies = {}
-    for line in cookies_content.split('\n'):
-        if line.startswith('#') or not line.strip():
-            continue
-        parts = line.strip().split('\t')
-        if len(parts) >= 7:
-            name = parts[5]
-            value = parts[6]
-            cookies[name] = value
-    return cookies
-
-
 def get_instagram_view_count(shortcode: str) -> int:
     """
-    Получает количество просмотров Instagram Reel через прямой запрос.
+    Получает количество просмотров Instagram Reel через instaloader с логином.
     """
     try:
-        cookies = parse_cookies_from_env()
-        if not cookies:
-            logger.warning("[INSTAGRAM] Нет cookies для получения просмотров")
+        username = os.getenv("INSTAGRAM_USERNAME", "")
+        password = os.getenv("INSTAGRAM_PASSWORD", "")
+
+        if not username or not password:
+            logger.warning("[INSTAGRAM] INSTAGRAM_USERNAME и INSTAGRAM_PASSWORD не заданы")
             return 0
 
-        # Запрашиваем данные поста через GraphQL API
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'X-IG-App-ID': '936619743392459',
-            'X-Requested-With': 'XMLHttpRequest',
-        }
+        L = instaloader.Instaloader()
 
-        # Используем embed endpoint
-        url = f"https://www.instagram.com/p/{shortcode}/embed/"
-        response = requests.get(url, headers=headers, cookies=cookies, timeout=10)
+        # Логинимся
+        try:
+            L.login(username, password)
+            logger.info(f"[INSTAGRAM] Залогинились как {username}")
+        except Exception as e:
+            logger.error(f"[INSTAGRAM] Ошибка логина: {e}")
+            return 0
 
-        if response.status_code == 200:
-            import re
-            # Ищем video_view_count в HTML
-            match = re.search(r'"video_view_count":\s*(\d+)', response.text)
-            if match:
-                view_count = int(match.group(1))
-                logger.info(f"[INSTAGRAM] Просмотры из embed: {view_count}")
-                return view_count
+        # Получаем пост
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
 
-            # Пробуем play_count
-            match = re.search(r'"play_count":\s*(\d+)', response.text)
-            if match:
-                view_count = int(match.group(1))
-                logger.info(f"[INSTAGRAM] Play count: {view_count}")
-                return view_count
-
-        logger.warning(f"[INSTAGRAM] Не нашёл просмотры в ответе")
-        return 0
+        # video_view_count для видео/reels
+        view_count = post.video_view_count if post.is_video else post.likes
+        logger.info(f"[INSTAGRAM] Просмотры: {view_count}")
+        return view_count or 0
 
     except Exception as e:
         logger.warning(f"[INSTAGRAM] Ошибка получения просмотров: {e}")
