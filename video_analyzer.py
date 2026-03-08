@@ -98,7 +98,7 @@ def get_instagram_view_count(shortcode: str) -> int:
 
 def download_instagram_reel(url: str) -> tuple[str, dict]:
     """
-    Скачивает Instagram Reel через yt-dlp с cookies из браузера.
+    Скачивает Instagram Reel через yt-dlp.
     """
     logger.info(f"[INSTAGRAM] Скачивание: {url}")
 
@@ -113,84 +113,63 @@ def download_instagram_reel(url: str) -> tuple[str, dict]:
     temp_dir = tempfile.mkdtemp()
     output_template = os.path.join(temp_dir, '%(id)s.%(ext)s')
 
-    # Пробуем разные браузеры для cookies
-    browsers = ['chrome', 'safari', 'firefox']
-    last_error = None
+    # Сначала пробуем без cookies (для публичных видео)
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': output_template,
+        'quiet': True,
+        'no_warnings': True,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '128',
+        }],
+    }
 
-    for browser in browsers:
-        try:
-            logger.info(f"[INSTAGRAM] Пробую cookies из {browser}...")
+    try:
+        logger.info("[INSTAGRAM] Пробую скачать без cookies...")
 
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': output_template,
-                'quiet': True,
-                'no_warnings': True,
-                'cookiesfrombrowser': (browser,),
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '128',
-                }],
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+
+            # Обрабатываем дату
+            upload_date = info.get('upload_date', '')
+            if not upload_date and info.get('timestamp'):
+                from datetime import datetime
+                upload_date = datetime.fromtimestamp(info['timestamp']).strftime('%Y%m%d')
+
+            view_count = info.get('view_count') or info.get('play_count', 0)
+
+            metadata = {
+                'platform': 'instagram',
+                'video_id': shortcode,
+                'title': (info.get('title') or info.get('description', ''))[:100] or 'Instagram Reel',
+                'description': info.get('description', ''),
+                'duration': info.get('duration', 0),
+                'view_count': view_count,
+                'like_count': info.get('like_count', 0),
+                'comment_count': info.get('comment_count', 0),
+                'uploader': info.get('uploader') or info.get('channel', ''),
+                'upload_date': upload_date,
+                'url': url,
             }
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
+            # Находим скачанный файл
+            audio_file = os.path.join(temp_dir, f"{info['id']}.mp3")
 
-                # Логируем все доступные поля для отладки
-                logger.info(f"[INSTAGRAM] Доступные поля: {list(info.keys())}")
-                logger.info(f"[INSTAGRAM] view_count={info.get('view_count')}, play_count={info.get('play_count')}")
-                logger.info(f"[INSTAGRAM] upload_date={info.get('upload_date')}, timestamp={info.get('timestamp')}")
-                logger.info(f"[INSTAGRAM] like_count={info.get('like_count')}, comment_count={info.get('comment_count')}")
+            if not os.path.exists(audio_file):
+                for f in os.listdir(temp_dir):
+                    if f.endswith(('.mp3', '.m4a', '.wav')):
+                        audio_file = os.path.join(temp_dir, f)
+                        break
 
-                # Обрабатываем дату - может быть upload_date или timestamp
-                upload_date = info.get('upload_date', '')
-                if not upload_date and info.get('timestamp'):
-                    # Конвертируем timestamp в YYYYMMDD
-                    from datetime import datetime
-                    upload_date = datetime.fromtimestamp(info['timestamp']).strftime('%Y%m%d')
+            if os.path.exists(audio_file):
+                logger.info(f"[INSTAGRAM] Скачано: {audio_file}")
+                return audio_file, metadata
 
-                # Получаем просмотры - сначала из yt-dlp, если нет - через instaloader
-                view_count = info.get('view_count') or info.get('play_count', 0)
-                if not view_count:
-                    logger.info("[INSTAGRAM] yt-dlp не вернул просмотры, пробую instaloader...")
-                    view_count = get_instagram_view_count(shortcode)
-
-                metadata = {
-                    'platform': 'instagram',
-                    'video_id': shortcode,
-                    'title': (info.get('title') or info.get('description', ''))[:100] or 'Instagram Reel',
-                    'description': info.get('description', ''),
-                    'duration': info.get('duration', 0),
-                    'view_count': view_count,
-                    'like_count': info.get('like_count', 0),
-                    'comment_count': info.get('comment_count', 0),
-                    'uploader': info.get('uploader') or info.get('channel', ''),
-                    'upload_date': upload_date,
-                    'url': url,
-                }
-
-                # Находим скачанный файл
-                audio_file = os.path.join(temp_dir, f"{info['id']}.mp3")
-
-                if not os.path.exists(audio_file):
-                    # Пробуем найти любой аудио файл
-                    for f in os.listdir(temp_dir):
-                        if f.endswith(('.mp3', '.m4a', '.wav')):
-                            audio_file = os.path.join(temp_dir, f)
-                            break
-
-                if os.path.exists(audio_file):
-                    logger.info(f"[INSTAGRAM] Скачано через {browser}: {audio_file}")
-                    return audio_file, metadata
-
-        except Exception as e:
-            last_error = e
-            logger.warning(f"[INSTAGRAM] {browser} не сработал: {e}")
-            continue
-
-    # Если ничего не помогло
-    raise Exception(f"Не удалось скачать Instagram. Убедись что ты залогинен в Instagram в браузере Chrome/Safari. Ошибка: {last_error}")
+    except Exception as e:
+        logger.error(f"[INSTAGRAM] Ошибка: {e}")
+        raise Exception(f"Не удалось скачать Instagram Reel. Возможно видео приватное. Ошибка: {e}")
 
 
 def download_video(url: str) -> tuple[str, dict]:
