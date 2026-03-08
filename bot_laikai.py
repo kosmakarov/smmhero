@@ -341,6 +341,53 @@ async def handle_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode='Markdown')
 
 
+async def handle_track(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обновляет просмотры всех видео клиентов."""
+    status_msg = await update.message.reply_text("📊 Начинаю трекинг просмотров...")
+
+    videos = supabase.get_all_videos_for_tracking()
+
+    if not videos:
+        await status_msg.edit_text("😕 Нет видео для трекинга.")
+        return
+
+    updated = 0
+    errors = 0
+
+    for i, video in enumerate(videos):
+        try:
+            url = video.get('link', '')
+            if not url:
+                continue
+
+            # Получаем актуальные просмотры
+            from video_analyzer import get_video_info_only
+            info = get_video_info_only(url)
+
+            new_views = info.get('view_count', 0)
+            if new_views and new_views > 0:
+                supabase.update_video_views(video['id'], new_views)
+                updated += 1
+
+            # Обновляем статус каждые 5 видео
+            if (i + 1) % 5 == 0:
+                await status_msg.edit_text(
+                    f"📊 Трекинг... {i + 1}/{len(videos)}\n✅ Обновлено: {updated}"
+                )
+
+        except Exception as e:
+            logger.error(f"[TRACK] Ошибка для {video.get('link', '')}: {e}")
+            errors += 1
+            continue
+
+    await status_msg.edit_text(
+        f"✅ **Трекинг завершён!**\n\n"
+        f"📹 Всего видео: {len(videos)}\n"
+        f"✅ Обновлено: {updated}\n"
+        f"❌ Ошибок: {errors}"
+    , parse_mode='Markdown')
+
+
 # ==================== MAIN ====================
 
 def main():
@@ -382,6 +429,7 @@ def main():
     # Команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("clients", handle_clients))
+    application.add_handler(CommandHandler("track", handle_track))
 
     # Callback от кнопок
     application.add_handler(CallbackQueryHandler(handle_callback))

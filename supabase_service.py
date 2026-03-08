@@ -60,24 +60,36 @@ class SupabaseManager:
             dict: Созданная запись или None при ошибке
         """
         try:
-            # Форматируем просмотры
-            views = video_info.get('view_count', 0)
-            if views:
-                if views >= 1_000_000:
-                    views_str = f"{views / 1_000_000:.1f}M"
-                elif views >= 1_000:
-                    views_str = f"{views / 1_000:.0f}K"
+            # Форматируем просмотры для отображения
+            view_count = video_info.get('view_count', 0) or 0
+            if view_count:
+                if view_count >= 1_000_000:
+                    views_str = f"{view_count / 1_000_000:.1f}M"
+                elif view_count >= 1_000:
+                    views_str = f"{view_count / 1_000:.0f}K"
                 else:
-                    views_str = str(views)
+                    views_str = str(view_count)
             else:
                 views_str = ""
+
+            # Парсим дату публикации (формат YYYYMMDD от yt-dlp)
+            upload_date = None
+            upload_date_raw = video_info.get('upload_date', '')
+            if upload_date_raw and len(upload_date_raw) == 8:
+                try:
+                    upload_date = f"{upload_date_raw[:4]}-{upload_date_raw[4:6]}-{upload_date_raw[6:8]}"
+                except:
+                    pass
 
             # Подготавливаем данные для вставки
             data = {
                 "client_id": client_id,
                 "link": video_info.get('url', ''),
                 "platform": video_info.get('platform', ''),
+                "video_id": video_info.get('video_id', ''),
                 "views": views_str,
+                "view_count": view_count,
+                "upload_date": upload_date,
                 "hook": analysis.get('hook', ''),
                 "visp": f"{analysis.get('visp', '')}\n{analysis.get('visp_details', '')}".strip(),
                 "problem": analysis.get('problem', ''),
@@ -90,6 +102,11 @@ class SupabaseManager:
 
             if response.data:
                 logger.info(f"[SUPABASE] Добавлен анализ видео для клиента {client_id}")
+
+                # Добавляем первую запись в историю просмотров
+                if view_count > 0:
+                    self.add_view_snapshot(response.data[0]['id'], view_count)
+
                 return response.data[0]
             return None
 
@@ -111,6 +128,77 @@ class SupabaseManager:
             return response.data or []
         except Exception as e:
             logger.error(f"[SUPABASE] Ошибка получения анализов: {e}")
+            return []
+
+    def add_view_snapshot(self, video_analysis_id: str, view_count: int) -> dict:
+        """Добавляет снимок просмотров в историю."""
+        try:
+            data = {
+                "video_analysis_id": video_analysis_id,
+                "view_count": view_count,
+            }
+            response = self.client.table("video_views_history").insert(data).execute()
+            if response.data:
+                logger.info(f"[SUPABASE] Добавлен снимок просмотров: {view_count}")
+                return response.data[0]
+            return None
+        except Exception as e:
+            logger.error(f"[SUPABASE] Ошибка добавления снимка: {e}")
+            return None
+
+    def get_all_videos_for_tracking(self) -> list:
+        """Получает все видео для трекинга (с ссылками)."""
+        try:
+            response = (
+                self.client.table("video_analysis")
+                .select("id, client_id, link, platform, view_count, upload_date")
+                .not_.is_("link", "null")
+                .execute()
+            )
+            return response.data or []
+        except Exception as e:
+            logger.error(f"[SUPABASE] Ошибка получения видео: {e}")
+            return []
+
+    def update_video_views(self, video_id: str, view_count: int) -> bool:
+        """Обновляет просмотры видео и добавляет в историю."""
+        try:
+            # Форматируем для отображения
+            if view_count >= 1_000_000:
+                views_str = f"{view_count / 1_000_000:.1f}M"
+            elif view_count >= 1_000:
+                views_str = f"{view_count / 1_000:.0f}K"
+            else:
+                views_str = str(view_count)
+
+            # Обновляем текущие просмотры
+            self.client.table("video_analysis").update({
+                "view_count": view_count,
+                "views": views_str,
+            }).eq("id", video_id).execute()
+
+            # Добавляем в историю
+            self.add_view_snapshot(video_id, view_count)
+
+            logger.info(f"[SUPABASE] Обновлены просмотры: {video_id} -> {views_str}")
+            return True
+        except Exception as e:
+            logger.error(f"[SUPABASE] Ошибка обновления просмотров: {e}")
+            return False
+
+    def get_views_history(self, video_analysis_id: str) -> list:
+        """Получает историю просмотров видео."""
+        try:
+            response = (
+                self.client.table("video_views_history")
+                .select("view_count, recorded_at")
+                .eq("video_analysis_id", video_analysis_id)
+                .order("recorded_at")
+                .execute()
+            )
+            return response.data or []
+        except Exception as e:
+            logger.error(f"[SUPABASE] Ошибка получения истории: {e}")
             return []
 
     def add_idea(self, client_id: str, idea: str, note: str = "", link: str = "") -> dict:
