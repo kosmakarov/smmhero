@@ -96,6 +96,19 @@ def get_instagram_view_count(shortcode: str) -> int:
         return 0
 
 
+def get_instagram_cookies_file() -> str:
+    """Создаёт временный файл с cookies из переменной окружения."""
+    cookies_content = os.getenv("INSTAGRAM_COOKIES", "")
+    if not cookies_content:
+        return None
+
+    # Создаём временный файл
+    cookies_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+    cookies_file.write(cookies_content)
+    cookies_file.close()
+    return cookies_file.name
+
+
 def download_instagram_reel(url: str) -> tuple[str, dict]:
     """
     Скачивает Instagram Reel через yt-dlp.
@@ -113,7 +126,7 @@ def download_instagram_reel(url: str) -> tuple[str, dict]:
     temp_dir = tempfile.mkdtemp()
     output_template = os.path.join(temp_dir, '%(id)s.%(ext)s')
 
-    # Сначала пробуем без cookies (для публичных видео)
+    # Базовые опции
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': output_template,
@@ -126,9 +139,15 @@ def download_instagram_reel(url: str) -> tuple[str, dict]:
         }],
     }
 
-    try:
-        logger.info("[INSTAGRAM] Пробую скачать без cookies...")
+    # Пробуем с cookies если есть
+    cookies_file = get_instagram_cookies_file()
+    if cookies_file:
+        logger.info("[INSTAGRAM] Использую cookies из переменной...")
+        ydl_opts['cookiefile'] = cookies_file
+    else:
+        logger.info("[INSTAGRAM] Cookies не найдены, пробую без них...")
 
+    try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
 
@@ -169,7 +188,11 @@ def download_instagram_reel(url: str) -> tuple[str, dict]:
 
     except Exception as e:
         logger.error(f"[INSTAGRAM] Ошибка: {e}")
-        raise Exception(f"Не удалось скачать Instagram Reel. Возможно видео приватное. Ошибка: {e}")
+        raise Exception(f"Не удалось скачать Instagram Reel. Добавь INSTAGRAM_COOKIES в Railway. Ошибка: {e}")
+    finally:
+        # Удаляем временный файл cookies
+        if cookies_file and os.path.exists(cookies_file):
+            os.unlink(cookies_file)
 
 
 def download_video(url: str) -> tuple[str, dict]:
