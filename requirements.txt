@@ -2,7 +2,7 @@
 python-telegram-bot==21.3
 
 # OpenAI (GPT + Whisper)
-openai==1.40.0
+openai>=1.60.0
 
 # Google Sheets (для старого бота)
 gspread==6.0.0
