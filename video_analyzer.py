@@ -69,6 +69,20 @@ def extract_video_id(url: str, platform: str) -> str:
     return url  # fallback
 
 
+def get_instagram_session_id() -> str:
+    """Извлекает sessionid из cookies."""
+    cookies_content = os.getenv("INSTAGRAM_COOKIES", "")
+    if not cookies_content:
+        return None
+
+    for line in cookies_content.split('\n'):
+        if 'sessionid' in line:
+            parts = line.strip().split('\t')
+            if len(parts) >= 7:
+                return parts[-1]  # sessionid value
+    return None
+
+
 def get_instagram_view_count(shortcode: str) -> int:
     """
     Получает количество просмотров Instagram Reel через instaloader.
@@ -76,13 +90,14 @@ def get_instagram_view_count(shortcode: str) -> int:
     try:
         L = instaloader.Instaloader()
 
-        # Пробуем загрузить сессию из файла если есть
-        session_file = os.path.expanduser("~/.config/instaloader/session")
-        if os.path.exists(session_file):
-            try:
-                L.load_session_from_file(os.getenv("INSTAGRAM_USERNAME", ""))
-            except:
-                pass
+        # Пробуем использовать sessionid из cookies
+        session_id = get_instagram_session_id()
+        if session_id:
+            import requests
+            session = requests.Session()
+            session.cookies.set('sessionid', session_id, domain='.instagram.com')
+            L.context._session = session
+            logger.info("[INSTALOADER] Использую sessionid из cookies")
 
         post = instaloader.Post.from_shortcode(L.context, shortcode)
 
