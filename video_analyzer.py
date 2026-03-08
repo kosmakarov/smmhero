@@ -69,45 +69,68 @@ def extract_video_id(url: str, platform: str) -> str:
     return url  # fallback
 
 
-def get_instagram_session_id() -> str:
-    """Извлекает sessionid из cookies."""
+def parse_cookies_from_env() -> dict:
+    """Парсит cookies из переменной окружения в dict."""
     cookies_content = os.getenv("INSTAGRAM_COOKIES", "")
     if not cookies_content:
-        return None
+        return {}
 
+    cookies = {}
     for line in cookies_content.split('\n'):
-        if 'sessionid' in line:
-            parts = line.strip().split('\t')
-            if len(parts) >= 7:
-                return parts[-1]  # sessionid value
-    return None
+        if line.startswith('#') or not line.strip():
+            continue
+        parts = line.strip().split('\t')
+        if len(parts) >= 7:
+            name = parts[5]
+            value = parts[6]
+            cookies[name] = value
+    return cookies
 
 
 def get_instagram_view_count(shortcode: str) -> int:
     """
-    Получает количество просмотров Instagram Reel через instaloader.
+    Получает количество просмотров Instagram Reel через прямой запрос.
     """
     try:
-        L = instaloader.Instaloader()
+        cookies = parse_cookies_from_env()
+        if not cookies:
+            logger.warning("[INSTAGRAM] Нет cookies для получения просмотров")
+            return 0
 
-        # Пробуем использовать sessionid из cookies
-        session_id = get_instagram_session_id()
-        if session_id:
-            import requests
-            session = requests.Session()
-            session.cookies.set('sessionid', session_id, domain='.instagram.com')
-            L.context._session = session
-            logger.info("[INSTALOADER] Использую sessionid из cookies")
+        # Запрашиваем данные поста через GraphQL API
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'X-IG-App-ID': '936619743392459',
+            'X-Requested-With': 'XMLHttpRequest',
+        }
 
-        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        # Используем embed endpoint
+        url = f"https://www.instagram.com/p/{shortcode}/embed/"
+        response = requests.get(url, headers=headers, cookies=cookies, timeout=10)
 
-        # video_view_count для видео/reels
-        view_count = post.video_view_count if post.is_video else post.likes
-        logger.info(f"[INSTALOADER] Просмотры: {view_count}")
-        return view_count or 0
+        if response.status_code == 200:
+            import re
+            # Ищем video_view_count в HTML
+            match = re.search(r'"video_view_count":\s*(\d+)', response.text)
+            if match:
+                view_count = int(match.group(1))
+                logger.info(f"[INSTAGRAM] Просмотры из embed: {view_count}")
+                return view_count
+
+            # Пробуем play_count
+            match = re.search(r'"play_count":\s*(\d+)', response.text)
+            if match:
+                view_count = int(match.group(1))
+                logger.info(f"[INSTAGRAM] Play count: {view_count}")
+                return view_count
+
+        logger.warning(f"[INSTAGRAM] Не нашёл просмотры в ответе")
+        return 0
 
     except Exception as e:
-        logger.warning(f"[INSTALOADER] Не удалось получить просмотры: {e}")
+        logger.warning(f"[INSTAGRAM] Ошибка получения просмотров: {e}")
         return 0
 
 
