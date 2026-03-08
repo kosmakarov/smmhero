@@ -19,6 +19,49 @@ logger = logging.getLogger(__name__)
 class SupabaseManager:
     """Менеджер для работы с Supabase."""
 
+    def _format_views_with_period(self, view_count: int, upload_date: str) -> str:
+        """Форматирует просмотры с периодом: '126K/2мес'"""
+        if not view_count:
+            return ""
+
+        # Форматируем число просмотров
+        if view_count >= 1_000_000:
+            views_str = f"{view_count / 1_000_000:.1f}M"
+        elif view_count >= 1_000:
+            views_str = f"{view_count / 1_000:.0f}K"
+        else:
+            views_str = str(view_count)
+
+        # Если есть дата — добавляем период
+        if upload_date:
+            try:
+                from datetime import datetime, date
+                pub_date = datetime.strptime(upload_date, "%Y-%m-%d").date()
+                today = date.today()
+                days = (today - pub_date).days
+
+                if days < 1:
+                    period = "сегодня"
+                elif days == 1:
+                    period = "1д"
+                elif days < 7:
+                    period = f"{days}д"
+                elif days < 30:
+                    weeks = days // 7
+                    period = f"{weeks}нед"
+                elif days < 365:
+                    months = days // 30
+                    period = f"{months}мес"
+                else:
+                    years = days // 365
+                    period = f"{years}г"
+
+                return f"{views_str}/{period}"
+            except:
+                pass
+
+        return views_str
+
     def __init__(self):
         url = os.getenv("SUPABASE_URL")
         key = os.getenv("SUPABASE_ANON_KEY")
@@ -60,18 +103,6 @@ class SupabaseManager:
             dict: Созданная запись или None при ошибке
         """
         try:
-            # Форматируем просмотры для отображения
-            view_count = video_info.get('view_count', 0) or 0
-            if view_count:
-                if view_count >= 1_000_000:
-                    views_str = f"{view_count / 1_000_000:.1f}M"
-                elif view_count >= 1_000:
-                    views_str = f"{view_count / 1_000:.0f}K"
-                else:
-                    views_str = str(view_count)
-            else:
-                views_str = ""
-
             # Парсим дату публикации (формат YYYYMMDD от yt-dlp)
             upload_date = None
             upload_date_raw = video_info.get('upload_date', '')
@@ -80,6 +111,10 @@ class SupabaseManager:
                     upload_date = f"{upload_date_raw[:4]}-{upload_date_raw[4:6]}-{upload_date_raw[6:8]}"
                 except:
                     pass
+
+            # Форматируем просмотры с периодом: "126K/2мес"
+            view_count = video_info.get('view_count', 0) or 0
+            views_str = self._format_views_with_period(view_count, upload_date)
 
             # Подготавливаем данные для вставки
             data = {
@@ -163,13 +198,12 @@ class SupabaseManager:
     def update_video_views(self, video_id: str, view_count: int) -> bool:
         """Обновляет просмотры видео и добавляет в историю."""
         try:
-            # Форматируем для отображения
-            if view_count >= 1_000_000:
-                views_str = f"{view_count / 1_000_000:.1f}M"
-            elif view_count >= 1_000:
-                views_str = f"{view_count / 1_000:.0f}K"
-            else:
-                views_str = str(view_count)
+            # Получаем upload_date для форматирования
+            response = self.client.table("video_analysis").select("upload_date").eq("id", video_id).single().execute()
+            upload_date = response.data.get('upload_date') if response.data else None
+
+            # Форматируем с периодом
+            views_str = self._format_views_with_period(view_count, upload_date)
 
             # Обновляем текущие просмотры
             self.client.table("video_analysis").update({
