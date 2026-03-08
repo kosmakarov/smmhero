@@ -9,7 +9,7 @@ gspread==6.0.0
 google-auth==2.27.0
 
 # Supabase (для Laikai)
-supabase==2.4.0
+supabase>=2.10.0
 
 # Instagram
 instaloader==4.10.3
