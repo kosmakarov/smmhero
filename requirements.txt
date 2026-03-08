@@ -1,0 +1,28 @@
+# Telegram Bot
+python-telegram-bot==21.3
+
+# OpenAI (GPT + Whisper)
+openai==1.40.0
+
+# Google Sheets (для старого бота)
+gspread==6.0.0
+google-auth==2.27.0
+
+# Supabase (для Laikai)
+supabase==2.4.0
+
+# Instagram
+instaloader==4.10.3
+
+# Video download
+yt-dlp>=2024.1.0
+
+# Audio processing
+pydub==0.25.1
+
+# Utils
+python-dotenv==1.0.1
+aiohttp==3.9.1
+
+# Image processing (для будущих фич)
+Pillow==10.4.0

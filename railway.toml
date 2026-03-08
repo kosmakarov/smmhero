@@ -1,0 +1,7 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python bot_laikai.py"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
