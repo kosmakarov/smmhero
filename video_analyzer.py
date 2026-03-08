@@ -157,7 +157,16 @@ def download_instagram_reel(url: str) -> tuple[str, dict]:
                 from datetime import datetime
                 upload_date = datetime.fromtimestamp(info['timestamp']).strftime('%Y%m%d')
 
+            # Instagram не отдаёт view_count, используем like_count как fallback
             view_count = info.get('view_count') or info.get('play_count', 0)
+            like_count = info.get('like_count', 0)
+
+            # Если нет просмотров — пробуем получить через instaloader
+            if not view_count:
+                try:
+                    view_count = get_instagram_view_count(shortcode)
+                except:
+                    pass
 
             metadata = {
                 'platform': 'instagram',
@@ -166,7 +175,7 @@ def download_instagram_reel(url: str) -> tuple[str, dict]:
                 'description': info.get('description', ''),
                 'duration': info.get('duration', 0),
                 'view_count': view_count,
-                'like_count': info.get('like_count', 0),
+                'like_count': like_count,
                 'comment_count': info.get('comment_count', 0),
                 'uploader': info.get('uploader') or info.get('channel', ''),
                 'upload_date': upload_date,
