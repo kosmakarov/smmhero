@@ -125,6 +125,7 @@ class SupabaseManager:
                 "views": views_str,
                 "view_count": view_count,
                 "upload_date": upload_date,
+                "transcript": video_info.get('transcript', ''),
                 "hook": analysis.get('hook', ''),
                 "visp": f"{analysis.get('visp', '')}\n{analysis.get('visp_details', '')}".strip(),
                 "problem": analysis.get('problem', ''),
