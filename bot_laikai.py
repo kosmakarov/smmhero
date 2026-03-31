@@ -325,14 +325,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             # Telegram ограничение — 4096 символов на сообщение
-            header = "📝 **Транскрибация:**\n\n"
+            header = "📝 Транскрибация:\n\n"
             max_len = 4096 - len(header) - 10
 
             if len(transcript) <= max_len:
-                await query.edit_message_text(header + transcript, parse_mode='Markdown')
+                await query.edit_message_text(header + transcript)
             else:
                 # Отправляем первую часть как edit, остальное — новыми сообщениями
-                await query.edit_message_text(header + transcript[:max_len] + "...", parse_mode='Markdown')
+                await query.edit_message_text(header + transcript[:max_len] + "...")
                 remaining = transcript[max_len:]
                 while remaining:
                     chunk = remaining[:4090]
