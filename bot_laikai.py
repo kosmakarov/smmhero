@@ -143,6 +143,9 @@ def get_clients_keyboard() -> InlineKeyboardMarkup:
     if row:  # Оставшиеся кнопки
         keyboard.append(row)
 
+    # Кнопка "Только текст" — транскрибация без анализа
+    keyboard.append([InlineKeyboardButton("📝 Только текст", callback_data="transcribe_only")])
+
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -300,6 +303,47 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     data = query.data
+
+    if data == "transcribe_only":
+        # Только транскрибация — без анализа и без сохранения
+        pending_url = context.user_data.get('pending_url')
+
+        if not pending_url:
+            await query.edit_message_text("😕 Ссылка потерялась. Скинь ещё раз.")
+            return
+
+        context.user_data['pending_url'] = None
+
+        await query.edit_message_text("⏳ Скачиваю и транскрибирую...")
+
+        try:
+            video_info = analyze_video(pending_url)
+            transcript = video_info.get('transcript', '')
+
+            if not transcript:
+                await query.edit_message_text("😕 Не удалось извлечь текст из видео.")
+                return
+
+            # Telegram ограничение — 4096 символов на сообщение
+            header = "📝 **Транскрибация:**\n\n"
+            max_len = 4096 - len(header) - 10
+
+            if len(transcript) <= max_len:
+                await query.edit_message_text(header + transcript, parse_mode='Markdown')
+            else:
+                # Отправляем первую часть как edit, остальное — новыми сообщениями
+                await query.edit_message_text(header + transcript[:max_len] + "...", parse_mode='Markdown')
+                remaining = transcript[max_len:]
+                while remaining:
+                    chunk = remaining[:4090]
+                    remaining = remaining[4090:]
+                    await query.message.reply_text(chunk)
+
+        except Exception as e:
+            logger.error(f"[TRANSCRIBE] Ошибка: {e}")
+            await query.edit_message_text(f"😕 Не получилось транскрибировать: {str(e)[:100]}")
+
+        return
 
     if data.startswith("client:"):
         client_id = data.split(":")[1]
