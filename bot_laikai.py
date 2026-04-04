@@ -175,22 +175,12 @@ async def handle_analyze_video(url: str, client_id: str, status_callback) -> str
         result = supabase.add_video_analysis(client_id, video_info, analysis)
 
         # Формируем ответ
-        response = f"""✅ Готово!
+        transcript = video_info.get('transcript', '')
+        hook = analysis.get('hook', 'N/A')
 
-📹 **{analysis.get('topic', 'Видео')}**
-👤 Клиент: {client_name}
-
-**Почему залетело (ВИСП):**
-{analysis.get('visp', 'N/A')}
-
-**Хук (первые 3 сек):**
-_{analysis.get('hook', 'N/A')}_
-
-**Что держит до конца:**
-{analysis.get('retention', 'N/A')}"""
-
-        if result:
-            response += "\n\n📊 Добавлено в Laikai"
+        response = f"✅ Готово! Клиент: {client_name}\n\n"
+        response += f"Хук: {hook}\n\n"
+        response += f"Текст ролика:\n{transcript}"
 
         return response
 
@@ -367,7 +357,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Анализируем
         response = await handle_analyze_video(pending_url, client_id, status_callback)
 
-        await query.edit_message_text(response, parse_mode='Markdown')
+        # Без parse_mode — в транскрипции могут быть спецсимволы
+        if len(response) <= 4096:
+            await query.edit_message_text(response)
+        else:
+            await query.edit_message_text(response[:4090] + "...")
+            remaining = response[4090:]
+            while remaining:
+                chunk = remaining[:4090]
+                remaining = remaining[4090:]
+                await query.message.reply_text(chunk)
 
 
 async def handle_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
