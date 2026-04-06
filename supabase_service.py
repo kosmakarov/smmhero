@@ -259,6 +259,132 @@ class SupabaseManager:
             return None
 
 
+    # ─── Статусы роликов ──────────────────────────────────────────────────
+
+    VALID_STATUSES = ['idea', 'facts', 'script', 'filmed', 'edited', 'published']
+
+    def get_all_clients_status(self, month: str = None) -> list:
+        """
+        Для каждого клиента: имя, ниша, кол-во роликов по каждому статусу.
+        month: '2026-04' или None = текущий.
+        """
+        if not month:
+            from datetime import date
+            month = date.today().strftime('%Y-%m')
+
+        try:
+            clients = self.get_clients()
+            result = []
+
+            for c in clients:
+                topics_res = (
+                    self.client.table("content_topics")
+                    .select("id, sort_order, title, production_status")
+                    .eq("client_id", c['id'])
+                    .like("publish_date", f"{month}%")
+                    .order("sort_order")
+                    .execute()
+                )
+                topics = topics_res.data or []
+                total = len(topics)
+
+                # Считаем сколько роликов НА ЭТОМ ЭТАПЕ ИЛИ ВЫШЕ
+                status_counts = {}
+                for s in self.VALID_STATUSES:
+                    idx = self.VALID_STATUSES.index(s)
+                    status_counts[s] = sum(
+                        1 for t in topics
+                        if t.get('production_status') and
+                        self.VALID_STATUSES.index(t['production_status']) >= idx
+                    )
+
+                published = status_counts.get('published', 0)
+
+                result.append({
+                    'id': c['id'],
+                    'name': c['name'],
+                    'niche': c.get('niche', ''),
+                    'total': total,
+                    'published': published,
+                    'counts': status_counts,
+                    'topics': topics,
+                })
+
+            return result
+
+        except Exception as e:
+            logger.error(f"[SUPABASE] Ошибка получения статусов: {e}")
+            return []
+
+    def get_client_topics(self, client_id: str, month: str = None) -> list:
+        """Список тем клиента с текущим статусом."""
+        if not month:
+            from datetime import date
+            month = date.today().strftime('%Y-%m')
+
+        try:
+            response = (
+                self.client.table("content_topics")
+                .select("id, sort_order, title, production_status")
+                .eq("client_id", client_id)
+                .like("publish_date", f"{month}%")
+                .order("sort_order")
+                .execute()
+            )
+            return response.data or []
+        except Exception as e:
+            logger.error(f"[SUPABASE] Ошибка получения тем: {e}")
+            return []
+
+    def update_topic_status(self, topic_id: str, new_status: str) -> bool:
+        """Обновить production_status."""
+        if new_status not in self.VALID_STATUSES:
+            logger.error(f"[SUPABASE] Недопустимый статус: {new_status}")
+            return False
+        try:
+            self.client.table("content_topics").update(
+                {"production_status": new_status}
+            ).eq("id", topic_id).execute()
+            logger.info(f"[SUPABASE] Статус обновлён: {topic_id} → {new_status}")
+            return True
+        except Exception as e:
+            logger.error(f"[SUPABASE] Ошибка обновления статуса: {e}")
+            return False
+
+    def update_topic_link(self, topic_id: str, link: str) -> bool:
+        """Сохранить ссылку и поставить статус published."""
+        try:
+            self.client.table("content_topics").update({
+                "material_link": link,
+                "production_status": "published",
+            }).eq("id", topic_id).execute()
+            logger.info(f"[SUPABASE] Ссылка + published: {topic_id}")
+            return True
+        except Exception as e:
+            logger.error(f"[SUPABASE] Ошибка обновления ссылки: {e}")
+            return False
+
+    def find_topic_by_number(self, client_id: str, number: int, month: str = None) -> dict:
+        """Найти тему по порядковому номеру (1-based) в текущем месяце."""
+        topics = self.get_client_topics(client_id, month)
+        if 1 <= number <= len(topics):
+            return topics[number - 1]
+        return None
+
+    def find_client_by_name(self, name_part: str) -> dict:
+        """Нечёткий поиск клиента по части имени."""
+        try:
+            clients = self.get_clients()
+            name_lower = name_part.lower().strip()
+            for c in clients:
+                if name_lower in c['name'].lower():
+                    return c
+            return None
+        except Exception as e:
+            logger.error(f"[SUPABASE] Ошибка поиска клиента: {e}")
+            return None
+
+
 # Тест
 if __name__ == "__main__":
     manager = SupabaseManager()

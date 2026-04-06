@@ -1,6 +1,7 @@
 """
 Вуди для Laikai — AI-агент для насмотренности.
 Анализирует видео и сохраняет в Supabase.
++ Обновление статусов роликов (6 этапов).
 """
 import os
 import re
@@ -8,6 +9,7 @@ import json
 import tempfile
 import logging
 import asyncio
+from datetime import time, datetime
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -282,6 +284,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    # Пробуем распарсить как обновление статуса
+    handled = await handle_status_reply(update, context)
+    if handled:
+        return
+
     # Обычное сообщение — чат
     response = await handle_chat(user_text)
     await safe_reply(update.message, response, parse_mode='Markdown')
@@ -293,6 +300,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     data = query.data
+
+    if data == "confirm_status":
+        pending = context.user_data.get('pending_status_updates', [])
+        if not pending:
+            await query.edit_message_text("Нет данных для обновления.")
+            return
+
+        results = []
+        for upd in pending:
+            ok = supabase.update_topic_status(upd['topic_id'], upd['status'])
+            emoji = STATUS_EMOJI[upd['status']]
+            if ok:
+                results.append(f"{emoji} {upd['client_name']} #{upd['number']} → {STATUS_LABEL[upd['status']]}")
+            else:
+                results.append(f"❌ {upd['client_name']} #{upd['number']} — ошибка")
+
+        context.user_data['pending_status_updates'] = []
+        await query.edit_message_text("Обновлено:\n" + "\n".join(results))
+        return
+
+    if data == "cancel_status":
+        context.user_data['pending_status_updates'] = []
+        await query.edit_message_text("Ок, жду новую формулировку.")
+        return
 
     if data == "transcribe_only":
         # Только транскрибация — без анализа и без сохранения
@@ -431,6 +462,308 @@ async def handle_track(update: Update, context: ContextTypes.DEFAULT_TYPE):
     , parse_mode='Markdown')
 
 
+# ==================== СТАТУСЫ РОЛИКОВ ====================
+
+STATUS_EMOJI = {
+    'idea': '💡', 'facts': '📋', 'script': '📝',
+    'filmed': '🎬', 'edited': '🎞', 'published': '✅',
+}
+
+STATUS_KEYWORDS = {
+    'idea':      ['идея', 'идеи', 'выбрали', 'отобрали', 'утвердили идеи'],
+    'facts':     ['фактура', 'фактуру', 'собрал фактуру', 'прислал фактуру'],
+    'script':    ['сценарий', 'написал', 'написали', 'скрипт'],
+    'filmed':    ['сняли', 'снято', 'съёмка', 'съемка', 'записали'],
+    'edited':    ['смонтировали', 'монтаж готов', 'монтаж сделан', 'смонтировано'],
+    'published': ['выложили', 'выложен', 'опубликовали', 'опубликован'],
+}
+
+STATUS_LABEL = {
+    'idea': 'идея', 'facts': 'фактура', 'script': 'сценарий',
+    'filmed': 'снято', 'edited': 'смонтировано', 'published': 'выложено',
+}
+
+PRODUCER_CHAT_ID = os.getenv("PRODUCER_CHAT_ID", "107783646")
+
+
+def format_status_message(clients_data: list) -> str:
+    """Форматирует сообщение со статусами всех клиентов."""
+    now = datetime.now()
+    month_name = now.strftime('%B').lower()
+    # Русские названия месяцев
+    ru_months = {
+        'january': 'январь', 'february': 'февраль', 'march': 'март',
+        'april': 'апрель', 'may': 'май', 'june': 'июнь',
+        'july': 'июль', 'august': 'август', 'september': 'сентябрь',
+        'october': 'октябрь', 'november': 'ноябрь', 'december': 'декабрь',
+    }
+    month_ru = ru_months.get(month_name, month_name)
+
+    lines = [f"📊 Статус на сегодня ({month_ru}):\n"]
+
+    for c in clients_data:
+        total = c['total']
+        pub = c['published']
+        counts = c['counts']
+
+        # Формат: 💡8 📋6 📝5 🎬4 🎞3 ✅3
+        counts_str = " ".join(
+            f"{STATUS_EMOJI[s]}{counts.get(s, 0)}"
+            for s in ['idea', 'facts', 'script', 'filmed', 'edited', 'published']
+        )
+
+        lines.append(f"{c['name']} — {pub}/{total} выложено")
+        lines.append(f"  {counts_str}")
+        lines.append("")
+
+    lines.append("Что изменилось? Ответь текстом или голосовым.")
+    return "\n".join(lines)
+
+
+def parse_status_updates(text: str) -> list:
+    """
+    Парсит текстовое сообщение и извлекает обновления статусов.
+    Возвращает: [{client_name, numbers, status}]
+    """
+    updates = []
+    text_lower = text.lower()
+
+    # Определяем статус по ключевым словам
+    detected_status = None
+    for status, keywords in STATUS_KEYWORDS.items():
+        for kw in keywords:
+            if kw in text_lower:
+                detected_status = status
+                break
+        if detected_status:
+            break
+
+    if not detected_status:
+        return []
+
+    # Ищем номера роликов
+    numbers = [int(n) for n in re.findall(r'\b(\d{1,2})\b', text) if 1 <= int(n) <= 20]
+
+    if not numbers:
+        return []
+
+    # Ищем имя клиента — берём все слова с заглавной буквы (не в начале предложения)
+    # или слова после "по", "у", "для"
+    name_patterns = [
+        r'(?:по|у|для|клиент[а]?)\s+([А-ЯЁа-яё]+)',
+        r'([А-ЯЁ][а-яё]{2,})',
+    ]
+
+    client_name = None
+    for pattern in name_patterns:
+        match = re.search(pattern, text)
+        if match:
+            candidate = match.group(1)
+            # Исключаем ключевые слова статусов
+            skip_words = {'сняли', 'снято', 'ролик', 'ролики', 'написал', 'написали',
+                          'сценарий', 'монтаж', 'выложили', 'выложен', 'смонтировали',
+                          'что', 'это', 'там', 'тут', 'еще', 'ещё', 'все', 'всё'}
+            if candidate.lower() not in skip_words:
+                client_name = candidate
+                break
+
+    if client_name:
+        updates.append({
+            'client_name': client_name,
+            'numbers': numbers,
+            'status': detected_status,
+        })
+
+    return updates
+
+
+async def send_daily_status(context: ContextTypes.DEFAULT_TYPE):
+    """Ежедневное сообщение в 20:00 МСК."""
+    try:
+        clients_data = supabase.get_all_clients_status()
+        if not clients_data:
+            return
+
+        msg = format_status_message(clients_data)
+        await context.bot.send_message(chat_id=PRODUCER_CHAT_ID, text=msg)
+        logger.info("[STATUS] Ежедневный статус отправлен")
+    except Exception as e:
+        logger.error(f"[STATUS] Ошибка отправки: {e}")
+
+
+async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/status — показать текущий статус."""
+    try:
+        clients_data = supabase.get_all_clients_status()
+        if not clients_data:
+            await update.message.reply_text("Нет данных по клиентам.")
+            return
+        msg = format_status_message(clients_data)
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.error(f"[STATUS] Ошибка: {e}")
+        await update.message.reply_text(f"Ошибка: {str(e)[:100]}")
+
+
+async def handle_quick_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/s Женя 4 снято — быстрое обновление статуса."""
+    args = context.args
+    if not args or len(args) < 3:
+        await update.message.reply_text("Формат: /s [имя] [номер] [статус]\nПример: /s Женя 4 снято")
+        return
+
+    name_part = args[0]
+    status_word = args[-1].lower()
+
+    # Собираем номера из середины
+    numbers = [int(a) for a in args[1:-1] if a.isdigit()]
+    if not numbers:
+        await update.message.reply_text("Не нашёл номер ролика. Пример: /s Женя 4 снято")
+        return
+
+    # Находим статус
+    detected_status = None
+    for status, keywords in STATUS_KEYWORDS.items():
+        if status_word in keywords or status_word == status:
+            detected_status = status
+            break
+    # Ещё попробуем по лейблу
+    if not detected_status:
+        for status, label in STATUS_LABEL.items():
+            if status_word == label:
+                detected_status = status
+                break
+
+    if not detected_status:
+        await update.message.reply_text(
+            f"Не понял статус '{status_word}'.\n"
+            f"Допустимые: идея, фактура, сценарий, снято, смонтировано, выложено"
+        )
+        return
+
+    # Находим клиента
+    found_client = supabase.find_client_by_name(name_part)
+    if not found_client:
+        await update.message.reply_text(f"Не нашёл клиента '{name_part}'")
+        return
+
+    # Обновляем
+    results = []
+    for num in numbers:
+        topic = supabase.find_topic_by_number(found_client['id'], num)
+        if topic:
+            ok = supabase.update_topic_status(topic['id'], detected_status)
+            emoji = STATUS_EMOJI[detected_status]
+            if ok:
+                results.append(f"{emoji} #{num} {topic['title']} → {STATUS_LABEL[detected_status]}")
+            else:
+                results.append(f"❌ #{num} ошибка обновления")
+        else:
+            results.append(f"❌ #{num} не найден")
+
+    response = f"Обновлено для {found_client['name']}:\n" + "\n".join(results)
+    await update.message.reply_text(response)
+
+
+async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/link Женя 3 https://... — ролик выложен + ссылка."""
+    args = context.args
+    if not args or len(args) < 3:
+        await update.message.reply_text("Формат: /link [имя] [номер] [ссылка]\nПример: /link Женя 3 https://...")
+        return
+
+    name_part = args[0]
+
+    # Находим номер
+    number = None
+    link = None
+    for a in args[1:]:
+        if a.isdigit():
+            number = int(a)
+        elif a.startswith('http'):
+            link = a
+
+    if not number or not link:
+        await update.message.reply_text("Не нашёл номер ролика или ссылку.")
+        return
+
+    found_client = supabase.find_client_by_name(name_part)
+    if not found_client:
+        await update.message.reply_text(f"Не нашёл клиента '{name_part}'")
+        return
+
+    topic = supabase.find_topic_by_number(found_client['id'], number)
+    if not topic:
+        await update.message.reply_text(f"Ролик #{number} не найден у {found_client['name']}")
+        return
+
+    ok = supabase.update_topic_link(topic['id'], link)
+    if ok:
+        await update.message.reply_text(
+            f"✅ {found_client['name']} — #{number} {topic['title']}\n"
+            f"Статус: выложено\nСсылка сохранена"
+        )
+    else:
+        await update.message.reply_text("Ошибка сохранения.")
+
+
+async def handle_status_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Проверяет, является ли сообщение ответом на статус-запрос.
+    Возвращает True если обработано, False если нет.
+    """
+    text = update.message.text or ''
+    if not text:
+        return False
+
+    updates = parse_status_updates(text)
+    if not updates:
+        return False
+
+    # Формируем подтверждение
+    confirm_lines = ["Правильно понял?\n"]
+    pending_updates = []
+
+    for upd in updates:
+        found_client = supabase.find_client_by_name(upd['client_name'])
+        if not found_client:
+            confirm_lines.append(f"❌ Не нашёл клиента '{upd['client_name']}'")
+            continue
+
+        emoji = STATUS_EMOJI[upd['status']]
+        nums_str = ", ".join(str(n) for n in upd['numbers'])
+        confirm_lines.append(
+            f"{emoji} {found_client['name']} — ролик {nums_str} → {STATUS_LABEL[upd['status']]}"
+        )
+
+        for num in upd['numbers']:
+            topic = supabase.find_topic_by_number(found_client['id'], num)
+            if topic:
+                pending_updates.append({
+                    'topic_id': topic['id'],
+                    'topic_title': topic['title'],
+                    'status': upd['status'],
+                    'client_name': found_client['name'],
+                    'number': num,
+                })
+
+    if not pending_updates:
+        return False
+
+    # Сохраняем pending для подтверждения
+    context.user_data['pending_status_updates'] = pending_updates
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Да", callback_data="confirm_status"),
+            InlineKeyboardButton("❌ Нет, переформулирую", callback_data="cancel_status"),
+        ]
+    ])
+
+    await update.message.reply_text("\n".join(confirm_lines), reply_markup=keyboard)
+    return True
+
+
 # ==================== MAIN ====================
 
 def main():
@@ -473,6 +806,9 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("clients", handle_clients))
     application.add_handler(CommandHandler("track", handle_track))
+    application.add_handler(CommandHandler("status", handle_status))
+    application.add_handler(CommandHandler("s", handle_quick_status))
+    application.add_handler(CommandHandler("link", handle_link))
 
     # Callback от кнопок
     application.add_handler(CallbackQueryHandler(handle_callback))
@@ -482,6 +818,16 @@ def main():
         filters.TEXT | filters.VOICE,
         handle_message
     ))
+
+    # Ежедневное сообщение в 20:00 МСК (17:00 UTC)
+    job_queue = application.job_queue
+    if job_queue:
+        job_queue.run_daily(
+            send_daily_status,
+            time=time(hour=17, minute=0),  # 17:00 UTC = 20:00 МСК
+            name="daily_status",
+        )
+        logger.info("[STATUS] Ежедневный статус запланирован на 20:00 МСК")
 
     logger.info("Вуди для Laikai запущен! 🤠")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
