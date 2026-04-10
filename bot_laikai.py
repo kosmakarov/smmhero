@@ -26,7 +26,7 @@ from telegram.ext import (
 from telegram.error import TimedOut, NetworkError
 
 from video_analyzer import analyze_video, detect_platform
-from content_analyzer import analyze_content
+# content_analyzer больше не используется — экономим токены GPT-4o
 from supabase_service import SupabaseManager
 
 load_dotenv()
@@ -152,33 +152,29 @@ def get_clients_keyboard() -> InlineKeyboardMarkup:
 
 
 async def handle_analyze_video(url: str, client_id: str, status_callback) -> str:
-    """Анализирует видео и сохраняет в Supabase."""
+    """Скачивает видео, транскрибирует и сохраняет в Supabase."""
 
-    # Получаем информацию о клиенте
     client_info = supabase.get_client_by_id(client_id)
     client_name = client_info['name'] if client_info else "Клиент"
 
-    await status_callback(f"⏳ Скачиваю и анализирую видео...\n📁 Клиент: {client_name}")
+    await status_callback(f"⏳ Скачиваю и транскрибирую...\n📁 Клиент: {client_name}")
 
     try:
-        # Анализируем видео
         video_info = analyze_video(url)
-
-        await status_callback(f"⏳ Транскрибировал, анализирую контент...")
-
-        # Анализируем через GPT
-        analysis = analyze_content(
-            transcript=video_info.get('transcript', ''),
-            video_info=video_info,
-            niche=client_info.get('niche', '') if client_info else '',
-        )
-
-        # Сохраняем в Supabase
-        result = supabase.add_video_analysis(client_id, video_info, analysis)
-
-        # Формируем ответ
         transcript = video_info.get('transcript', '')
-        hook = analysis.get('hook', 'N/A')
+
+        # Хук = первое предложение транскрипции
+        hook = transcript.split('.')[0].strip() if transcript else ''
+
+        # Сохраняем в Supabase (без GPT-анализа)
+        analysis = {
+            'topic': hook[:50] if hook else 'Без названия',
+            'hook': hook,
+            'format': '', 'visp': '', 'visp_details': '',
+            'problem': '', 'hunt_level': '', 'retention': '',
+            'cta': '', 'idea_for_adaptation': '',
+        }
+        supabase.add_video_analysis(client_id, video_info, analysis)
 
         response = f"✅ Готово! Клиент: {client_name}\n\n"
         response += f"Хук: {hook}\n\n"
@@ -187,26 +183,8 @@ async def handle_analyze_video(url: str, client_id: str, status_callback) -> str
         return response
 
     except Exception as e:
-        logger.error(f"[AGENT] Ошибка анализа: {e}")
-        return f"😕 Не получилось проанализировать: {str(e)[:100]}\n\nПопробуй другую ссылку?"
-
-
-async def handle_chat(user_message: str) -> str:
-    """Обрабатывает обычное общение."""
-    clients = supabase.get_clients()
-    client_names = [c['name'] for c in clients]
-
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": AGENT_SYSTEM_PROMPT.format(clients=client_names)},
-            {"role": "user", "content": user_message}
-        ],
-        temperature=0.7,
-        max_tokens=500
-    )
-
-    return response.choices[0].message.content
+        logger.error(f"[AGENT] Ошибка: {e}")
+        return f"😕 Не получилось: {str(e)[:100]}\n\nПопробуй другую ссылку?"
 
 
 # ==================== TELEGRAM HANDLERS ====================
@@ -289,9 +267,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if handled:
         return
 
-    # Обычное сообщение — чат
-    response = await handle_chat(user_text)
-    await safe_reply(update.message, response, parse_mode='Markdown')
+    # Обычное сообщение — подсказка
+    await safe_reply(update.message,
+        "Не понял. Вот что я умею:\n\n"
+        "📹 Скинь ссылку на видео — транскрибирую\n"
+        "📊 /status — статус роликов\n"
+        "⚡ /s Женя 4 снято — быстрый статус\n"
+        "🔗 /link Женя 3 https://... — ссылка на ролик"
+    )
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
