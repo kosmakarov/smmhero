@@ -105,10 +105,18 @@ def get_instagram_view_count(shortcode: str) -> int:
 
 
 def get_instagram_cookies_file() -> str:
-    """Создаёт временный файл с cookies из переменной окружения."""
+    """Создаёт временный файл с cookies из переменной окружения.
+    Терпит оба формата: с реальными переводами строк и с литералами \\n
+    (последнее бывает когда .env переносили из другого окружения)."""
     cookies_content = os.getenv("INSTAGRAM_COOKIES", "")
     if not cookies_content:
         return None
+
+    # Если значение пришло одной строкой с литералами \n и \t —
+    # разэкранируем в настоящие управляющие символы (формат Netscape
+    # требует именно табы и переводы строк).
+    if "\\n" in cookies_content and cookies_content.count("\n") < 3:
+        cookies_content = cookies_content.replace("\\t", "\t").replace("\\n", "\n")
 
     # Создаём временный файл
     cookies_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
