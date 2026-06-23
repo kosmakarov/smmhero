@@ -163,57 +163,87 @@ def download_instagram_reel(url: str) -> tuple[str, dict]:
     else:
         logger.info("[INSTAGRAM] Cookies не найдены, пробую без них...")
 
+    # Instagram часто отшивает по rate-limit при нескольких запросах
+    # подряд с одного IP. Это временно — повторяем с нарастающей паузой.
+    import time as _time
+    max_attempts = 4
+    backoff = [20, 40, 70]  # паузы между попытками (сек)
+    last_err = None
+
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+        for attempt in range(max_attempts):
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
 
-            # Обрабатываем дату
-            upload_date = info.get('upload_date', '')
-            if not upload_date and info.get('timestamp'):
-                from datetime import datetime
-                upload_date = datetime.fromtimestamp(info['timestamp']).strftime('%Y%m%d')
+                # Обрабатываем дату
+                upload_date = info.get('upload_date', '')
+                if not upload_date and info.get('timestamp'):
+                    from datetime import datetime
+                    upload_date = datetime.fromtimestamp(info['timestamp']).strftime('%Y%m%d')
 
-            # Instagram не отдаёт view_count, используем like_count как fallback
-            view_count = info.get('view_count') or info.get('play_count', 0)
-            like_count = info.get('like_count', 0)
+                # Instagram не отдаёт view_count, используем like_count как fallback
+                view_count = info.get('view_count') or info.get('play_count', 0)
+                like_count = info.get('like_count', 0)
 
-            # Если нет просмотров — пробуем получить через instaloader
-            if not view_count:
-                try:
-                    view_count = get_instagram_view_count(shortcode)
-                except:
-                    pass
+                # Если нет просмотров — пробуем получить через instaloader
+                if not view_count:
+                    try:
+                        view_count = get_instagram_view_count(shortcode)
+                    except:
+                        pass
 
-            metadata = {
-                'platform': 'instagram',
-                'video_id': shortcode,
-                'title': (info.get('title') or info.get('description', ''))[:100] or 'Instagram Reel',
-                'description': info.get('description', ''),
-                'duration': info.get('duration', 0),
-                'view_count': view_count,
-                'like_count': like_count,
-                'comment_count': info.get('comment_count', 0),
-                'uploader': info.get('uploader') or info.get('channel', ''),
-                'upload_date': upload_date,
-                'url': url,
-            }
+                metadata = {
+                    'platform': 'instagram',
+                    'video_id': shortcode,
+                    'title': (info.get('title') or info.get('description', ''))[:100] or 'Instagram Reel',
+                    'description': info.get('description', ''),
+                    'duration': info.get('duration', 0),
+                    'view_count': view_count,
+                    'like_count': like_count,
+                    'comment_count': info.get('comment_count', 0),
+                    'uploader': info.get('uploader') or info.get('channel', ''),
+                    'upload_date': upload_date,
+                    'url': url,
+                }
 
-            # Находим скачанный файл
-            audio_file = os.path.join(temp_dir, f"{info['id']}.mp3")
+                # Находим скачанный файл
+                audio_file = os.path.join(temp_dir, f"{info['id']}.mp3")
 
-            if not os.path.exists(audio_file):
-                for f in os.listdir(temp_dir):
-                    if f.endswith(('.mp3', '.m4a', '.wav')):
-                        audio_file = os.path.join(temp_dir, f)
-                        break
+                if not os.path.exists(audio_file):
+                    for f in os.listdir(temp_dir):
+                        if f.endswith(('.mp3', '.m4a', '.wav')):
+                            audio_file = os.path.join(temp_dir, f)
+                            break
 
-            if os.path.exists(audio_file):
-                logger.info(f"[INSTAGRAM] Скачано: {audio_file}")
-                return audio_file, metadata
+                if os.path.exists(audio_file):
+                    logger.info(f"[INSTAGRAM] Скачано: {audio_file}")
+                    return audio_file, metadata
+
+                raise Exception("Файл не найден после скачивания")
+
+            except Exception as e:
+                last_err = e
+                is_rate_limit = any(s in str(e).lower() for s in
+                                    ['rate-limit', 'rate limit', 'login required',
+                                     'not available', 'blocked'])
+                if is_rate_limit and attempt < max_attempts - 1:
+                    wait = backoff[attempt]
+                    logger.warning(f"[INSTAGRAM] Попытка {attempt+1} — rate-limit, жду {wait}с и повторяю")
+                    _time.sleep(wait)
+                    continue
+                # не rate-limit или попытки кончились
+                raise
 
     except Exception as e:
-        logger.error(f"[INSTAGRAM] Ошибка: {e}")
-        raise Exception(f"Не удалось скачать Instagram Reel. Добавь INSTAGRAM_COOKIES в Railway. Ошибка: {e}")
+        logger.error(f"[INSTAGRAM] Ошибка после {max_attempts} попыток: {e}")
+        if any(s in str(e).lower() for s in ['rate-limit', 'rate limit', 'login required', 'not available', 'blocked']):
+            raise Exception(
+                "Instagram временно ограничил скачивание (rate-limit). "
+                "Подожди 5-10 минут и пришли ссылку снова. "
+                "Если повторяется часто — нужно обновить INSTAGRAM_COOKIES."
+            )
+        raise Exception(f"Не удалось скачать Instagram Reel. Ошибка: {str(e)[:150]}")
     finally:
         # Удаляем временный файл cookies
         if cookies_file and os.path.exists(cookies_file):
