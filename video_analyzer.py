@@ -324,28 +324,15 @@ def download_video(url: str) -> tuple[str, dict]:
 
 def transcribe_audio(audio_path: str) -> str:
     """
-    Транскрибирует аудио через OpenAI Whisper.
-
-    Args:
-        audio_path: Путь к аудио файлу
-
-    Returns:
-        str: Транскрипция
+    Транскрибирует аудио. Локальный faster-whisper в приоритете
+    (бесплатно, не зависит от баланса OpenAI), OpenAI API — резерв.
     """
     logger.info(f"[WHISPER] Транскрипция: {audio_path}")
-
     try:
-        with open(audio_path, 'rb') as audio_file:
-            response = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                language="ru",  # Можно сделать автоопределение
-                response_format="text"
-            )
-
-        logger.info(f"[WHISPER] Транскрипция готова: {len(response)} символов")
-        return response
-
+        from local_whisper import transcribe
+        text = transcribe(audio_path, language="ru")
+        logger.info(f"[WHISPER] Транскрипция готова: {len(text)} символов")
+        return text
     except Exception as e:
         logger.error(f"[WHISPER] Ошибка транскрипции: {e}")
         raise
